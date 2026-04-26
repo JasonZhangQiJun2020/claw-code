@@ -1119,6 +1119,7 @@ pub fn flatten_tool_result_content(content: &[ToolResultContentBlock]) -> String
 /// accepts them, so we normalise unconditionally.
 fn normalize_object_schema(schema: &mut Value) {
     if let Some(obj) = schema.as_object_mut() {
+        normalize_type_array(obj);
         if obj.get("type").and_then(Value::as_str) == Some("object") {
             obj.entry("properties").or_insert_with(|| json!({}));
             obj.entry("additionalProperties")
@@ -1140,6 +1141,39 @@ fn normalize_object_schema(schema: &mut Value) {
             normalize_object_schema(items);
         }
     }
+}
+
+fn normalize_type_array(obj: &mut serde_json::Map<String, Value>) {
+    let Some(type_value) = obj.get("type").cloned() else {
+        return;
+    };
+
+    let Some(type_array) = type_value.as_array() else {
+        return;
+    };
+
+    let mut variants = Vec::new();
+    for item in type_array {
+        if let Some(type_name) = item.as_str() {
+            variants.push(type_name);
+        }
+    }
+
+    if variants.is_empty() {
+        return;
+    }
+
+    if variants.len() == 1 {
+        obj.insert("type".to_string(), json!(variants[0]));
+        return;
+    }
+
+    let any_of = variants
+        .into_iter()
+        .map(|type_name| json!({ "type": type_name }))
+        .collect::<Vec<_>>();
+    obj.remove("type");
+    obj.insert("anyOf".to_string(), json!(any_of));
 }
 
 fn openai_tool_definition(tool: &ToolDefinition) -> Value {
@@ -1503,6 +1537,22 @@ mod tests {
             schema3["additionalProperties"],
             json!(true),
             "must not overwrite existing"
+        );
+    }
+
+    #[test]
+    fn tool_schema_type_array_is_converted_to_anyof() {
+        let mut schema = json!({"type": ["string", "boolean", "number"]});
+        normalize_object_schema(&mut schema);
+        assert_eq!(
+            schema,
+            json!({
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "boolean"},
+                    {"type": "number"}
+                ]
+            })
         );
     }
 
